@@ -268,7 +268,7 @@ impl Sidebar {
                 let selected = self.selected.as_deref() == Some(guid.as_str());
                 match ui::look(cx) {
                     ui::Look::Mac => chat_row(&guid, selected, cx),
-                    look => list_row(&guid, look, cx),
+                    look => list_row(&guid, look, selected, cx),
                 }
             }
             Item::Section(title) => label(title)
@@ -546,7 +546,7 @@ fn chat_row(guid: &str, selected: bool, cx: &mut App) -> AnyElement {
 
 /// One conversation as WinUI's list view and libadwaita's navigation sidebar show it: the picture,
 /// the name (bold while unread) with the date, one line of preview and the unread dot after it.
-fn list_row(guid: &str, look: ui::Look, cx: &mut App) -> AnyElement {
+fn list_row(guid: &str, look: ui::Look, selected: bool, cx: &mut App) -> AnyElement {
     let Some(store) = bridge::store(cx) else { return div().into_any_element() };
     let (chat, unread, typing, silenced) = {
         let state = store.state();
@@ -566,7 +566,8 @@ fn list_row(guid: &str, look: ui::Look, cx: &mut App) -> AnyElement {
     };
     let date = if chat.last_activity > 0 { format_list_date(chat.last_activity, ui::now_ms()) } else { String::new() };
     let menu_chat = chat.clone();
-    let secondary = theme.text.secondary;
+    // The selected row's fill takes secondary text under 4.5:1, as in chat_row.
+    let secondary = if selected { theme.text.primary } else { theme.text.secondary };
     h_flex()
         .id(format!("chat-{}", chat.identifier))
         .h(px(LIST_ROW))
@@ -603,7 +604,7 @@ fn list_row(guid: &str, look: ui::Look, cx: &mut App) -> AnyElement {
                             label(preview)
                                 .lines(1)
                                 .text_size(theme.type_scale.footnote)
-                                .text_color(if typing { theme.accent } else { secondary })
+                                .text_color(if typing && !selected { theme.accent } else { secondary })
                                 .flex_1()
                                 .min_w_0(),
                         )
