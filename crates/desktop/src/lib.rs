@@ -57,6 +57,10 @@ pub fn open(cx: &mut App) -> WindowHandle<root::Root> {
 /// window opens. For the appearance audit and screenshots, which render one settled frame and
 /// run none of the app's async work.
 pub fn open_demo(cx: &mut App) -> WindowHandle<root::Root> {
+    open_demo_sized(cx, DEFAULT_SIZE)
+}
+
+pub fn open_demo_sized(cx: &mut App, (width, height): (f32, f32)) -> WindowHandle<root::Root> {
     init(cx);
     let config = messages_core::config::Config { demo: true, ..Default::default() };
     let store = {
@@ -69,7 +73,7 @@ pub fn open_demo(cx: &mut App) -> WindowHandle<root::Root> {
         store.select_chat(Some("iMessage;-;+14155550134")).await;
     });
     cx.set_global(bridge::ConfigHandle(config.clone()));
-    let options = WindowOptions::main("main").title("Messages").size(size(px(DEFAULT_SIZE.0), px(DEFAULT_SIZE.1)));
+    let options = WindowOptions::main("main").title("Messages").size(size(px(width), px(height)));
     cx.open_window(options, move |window, cx| cx.new(|cx| root::Root::with_store(config, store, window, cx)))
 }
 

@@ -24,6 +24,9 @@ nd-ipc = { git = "https://github.com/FormalStudio/NativeDesktop", branch = "main
 nd = { git = "https://github.com/FormalStudio/NativeDesktop", branch = "main", features = ["test", "audit"] }
 nd-test = { git = "https://github.com/FormalStudio/NativeDesktop", branch = "main" }
 ndshell = { git = "https://github.com/FormalStudio/NativeDesktop", branch = "main" }
+nd-backend-gpui = { git = "https://github.com/FormalStudio/NativeDesktop", branch = "main", features = ["capture"] }
+nd-gpui = { git = "https://github.com/FormalStudio/NativeDesktop", branch = "main", features = ["platform", "test-support"] }
+nd-theme = { git = "https://github.com/FormalStudio/NativeDesktop", branch = "main" }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 ndshell = { git = "https://github.com/FormalStudio/NativeDesktop", branch = "main" }
@@ -34,4 +37,9 @@ nd = { git = "https://github.com/FormalStudio/NativeDesktop", branch = "main", d
 # The appearance audit owns the main thread (AppKit), so libtest's harness is off.
 [[test]]
 name = "appearance"
+harness = false
+
+# GPUI headless needs the main thread on macOS.
+[[test]]
+name = "frame"
 harness = false
