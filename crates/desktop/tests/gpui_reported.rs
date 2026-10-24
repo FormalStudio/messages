@@ -192,7 +192,7 @@ fn real_the_gif_favourites_scroll() {
     std::fs::write(config.join("messages/config.json"), json.to_string()).unwrap();
     let app = open_alex(LaunchOptions::new(env!("CARGO_BIN_EXE_messages")).env("XDG_CONFIG_HOME", config.display().to_string()));
     app.get_by_test_id("composer.attach").click().unwrap();
-    app.get_by_test_id("gif").click().unwrap();
+    app.get_by_text("GIFs").click().unwrap();
     let results = app.get_by_test_id("gif-results");
     expect(&results).to_be_visible().unwrap();
     std::thread::sleep(Duration::from_millis(600));

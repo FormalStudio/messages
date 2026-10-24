@@ -23,6 +23,9 @@ const SEARCH_DEBOUNCE: Duration = Duration::from_millis(250);
 /// row, the unread dot centred 19 pt in, the text 6 pt after the avatar.
 const AVATAR_ROW: f32 = 40.;
 const ROW_HEIGHT: f32 = 80.;
+/// A conversation in WinUI's list view and in libadwaita's navigation sidebar: a 40 px picture,
+/// the name over one line of preview.
+const LIST_ROW: f32 = 64.;
 /// Messages' search field: 62 pt from the window's top, 36 tall.
 const SEARCH_TOP: f32 = 62.;
 /// How far down the toolbar's band and blur reach over the sidebar: under the search field.
@@ -48,6 +51,8 @@ const OPERATOR_TIPS: [&str; 4] = [
 pub enum Item {
     /// The pinned conversations' grid, the list's first row so it scrolls away with the list.
     Pinned,
+    /// A section's caption over its rows, where pinned conversations are rows (WinUI, GNOME).
+    Section(&'static str),
     Chat(String),
     ResultsHeader,
     /// A search hit, by message guid.
@@ -223,6 +228,32 @@ impl Sidebar {
         );
     }
 
+    /// The search field, for the window's title bar (WinUI's AutoSuggestBox) or header bar
+    /// (libadwaita's search toggle and bar); on macOS the sidebar floats its own.
+    pub fn search_field(this: &Entity<Self>, cx: &App) -> TextField {
+        let query = this.read(cx).query.clone();
+        let (change, submit) = (this.clone(), this.clone());
+        text_field("sidebar-search")
+            .search()
+            .text(query)
+            .placeholder("Search")
+            .label("Search")
+            .on_change(move |e: &TextChanged, _, cx| change.update(cx, |this, cx| this.set_query(e.text.clone(), cx)))
+            .on_submit(move |_: &TextSubmitted, window, cx| {
+                let first = submit.read(cx).first_chat();
+                if let Some(guid) = first {
+                    Self::open(&guid, window, cx);
+                }
+            })
+    }
+
+    fn first_chat(&self) -> Option<String> {
+        self.list.items().into_iter().find_map(|item| match item {
+            Item::Chat(guid) => Some(guid),
+            _ => None,
+        })
+    }
+
     fn open(guid: &str, window: &mut Window, cx: &mut App) {
         crate::ui::dispatch(window, cx, OpenChat(guid.to_owned()));
     }
@@ -235,8 +266,19 @@ impl Sidebar {
             }
             Item::Chat(guid) => {
                 let selected = self.selected.as_deref() == Some(guid.as_str());
-                chat_row(&guid, selected, cx)
+                match ui::look(cx) {
+                    ui::Look::Mac => chat_row(&guid, selected, cx),
+                    look => list_row(&guid, look, cx),
+                }
             }
+            Item::Section(title) => label(title)
+                .text_style(TextStyle::Caption1)
+                .font_weight(FontWeight::SEMIBOLD)
+                .secondary()
+                .ml_3()
+                .mt_3()
+                .mb_1()
+                .into_any_element(),
             Item::ResultsHeader => {
                 label("Messages").text_style(TextStyle::Caption1).secondary().ml_3().mt_3().into_any_element()
             }
@@ -353,7 +395,9 @@ impl Sidebar {
         v_flex().id("pinned").px(px(PINNED_INSET)).pb_2().gap(px(PINNED_GAP)).children(rows).into_any_element()
     }
 
-    fn footer(&self, cx: &mut Context<Self>) -> AnyElement {
+    /// The connection line. GNOME apps keep settings in the primary menu and speak up about the
+    /// connection only when it needs attention, so there it shows only then.
+    fn footer(&self, look: ui::Look, cx: &mut Context<Self>) -> Option<AnyElement> {
         let theme = cx.theme().clone();
         let (status, error, host, pending) = match bridge::store(cx) {
             Some(store) => {
@@ -377,6 +421,10 @@ impl Sidebar {
         } else {
             String::new()
         };
+        let healthy = status == ConnectionStatus::Online && error.is_none() && pending == 0;
+        if look == ui::Look::Adwaita && healthy {
+            return None;
+        }
         let (color, text_label) = match status {
             ConnectionStatus::Online => match error {
                 Some(error) => (theme.warning, format!("{error}{queued}")),
@@ -401,12 +449,15 @@ impl Sidebar {
                     .flex_1()
                     .min_w_0(),
             )
-            .child(
-                icon_button("settings", Icon::Settings)
-                    .tooltip(format!("Settings ({})", ui::shortcut(",", false)))
-                    .on_click(|_, window, cx| crate::ui::dispatch(window, cx, OpenSettings)),
-            )
+            .when(look != ui::Look::Adwaita, |row| {
+                row.child(
+                    icon_button("settings", Icon::Settings)
+                        .tooltip(format!("Settings ({})", ui::shortcut(",", false)))
+                        .on_click(|_, window, cx| crate::ui::dispatch(window, cx, OpenSettings)),
+                )
+            })
             .into_any_element()
+            .into()
     }
 }
 
@@ -420,7 +471,7 @@ fn has_filter(parsed: &messages_core::search::ParsedSearchQuery) -> bool {
         || !parsed.chat_names.is_empty()
 }
 
-/// One conversation in the list: unread dot, avatar, title with the muted bell and Focus moon,
+/// One conversation in Messages' list on macOS: unread dot, avatar, title with the muted bell and Focus moon,
 /// date, and two lines of preview (or "Typing…" in the accent).
 fn chat_row(guid: &str, selected: bool, cx: &mut App) -> AnyElement {
     let Some(store) = bridge::store(cx) else { return div().into_any_element() };
@@ -452,20 +503,10 @@ fn chat_row(guid: &str, selected: bool, cx: &mut App) -> AnyElement {
         .context_menu(move |menu, _, _| chat_menu(menu, &menu_chat, false))
         .child(
             // The source list insets the row 16 pt; the dot's centre lands 19 pt from the edge
-            // and the avatar 28, as measured in Messages. The drawn sidebars on Linux and Windows
-            // have no such inset, so the dot gets a column of its own inside the selection.
-            div()
-                .w(px(if cfg!(target_os = "macos") { 12. } else { 22. }))
-                .flex()
-                .flex_none()
-                .when(!cfg!(target_os = "macos"), |col| col.justify_center())
-                .when(unread, |col| {
-                    col.child(
-                        ui::dot(theme.accent, 8.)
-                            .when(cfg!(target_os = "macos"), |dot| dot.ml(px(-1.)))
-                            .id(format!("unread-{}", chat.identifier)),
-                    )
-                }),
+            // and the avatar 28, as measured in Messages.
+            div().w(px(12.)).flex().flex_none().when(unread, |col| {
+                col.child(ui::dot(theme.accent, 8.).ml(px(-1.)).id(format!("unread-{}", chat.identifier)))
+            }),
         )
         .child(ui::chat_avatar(&chat, AVATAR_ROW))
         .child(
@@ -477,9 +518,8 @@ fn chat_row(guid: &str, selected: bool, cx: &mut App) -> AnyElement {
                 .justify_center()
                 .gap_0p5()
                 .relative()
-                // The hairline under each row, from the text's edge, as Messages draws them. GNOME's
-                // navigation sidebar and WinUI's navigation view separate rows by space alone.
-                .when(!selected && cfg!(target_os = "macos"), |col| {
+                // The hairline under each row, from the text's edge, as Messages draws them.
+                .when(!selected, |col| {
                     col.child(separator().absolute().bottom_0().left_0().right_0())
                 })
                 .child(
@@ -499,6 +539,77 @@ fn chat_row(guid: &str, selected: bool, cx: &mut App) -> AnyElement {
                     } else {
                         secondary
                     }),
+                ),
+        )
+        .into_any_element()
+}
+
+/// One conversation as WinUI's list view and libadwaita's navigation sidebar show it: the picture,
+/// the name (bold while unread) with the date, one line of preview and the unread dot after it.
+fn list_row(guid: &str, look: ui::Look, cx: &mut App) -> AnyElement {
+    let Some(store) = bridge::store(cx) else { return div().into_any_element() };
+    let (chat, unread, typing, silenced) = {
+        let state = store.state();
+        let Some(chat) = state.chat(guid).cloned() else { return div().into_any_element() };
+        (
+            chat,
+            conversation_unread(&state, guid),
+            conversation_typing(&state, guid),
+            conversation_focus(&state, guid) == FocusStatus::Silenced,
+        )
+    };
+    let theme = cx.theme().clone();
+    let preview = if typing {
+        "Typing\u{2026}".to_owned()
+    } else {
+        ui::clamp_preview(&preview_text(chat.last_message.as_ref(), &chat), PREVIEW_CHARS)
+    };
+    let date = if chat.last_activity > 0 { format_list_date(chat.last_activity, ui::now_ms()) } else { String::new() };
+    let menu_chat = chat.clone();
+    let secondary = theme.text.secondary;
+    h_flex()
+        .id(format!("chat-{}", chat.identifier))
+        .h(px(LIST_ROW))
+        .px(px(if look == ui::Look::Fluent { 12. } else { 6. }))
+        .gap(px(12.))
+        .context_menu(move |menu, _, _| chat_menu(menu, &menu_chat, false))
+        .child(ui::chat_avatar(&chat, AVATAR_ROW))
+        .child(
+            v_flex()
+                .flex_1()
+                .min_w_0()
+                .gap_0p5()
+                .child(
+                    h_flex()
+                        .gap_1()
+                        .items_center()
+                        .child(
+                            label(chat_title(&chat))
+                                .font_weight(if unread { FontWeight::BOLD } else { FontWeight::NORMAL })
+                                .flex_1()
+                                .min_w_0(),
+                        )
+                        .when(silenced, |row| row.child(icon(Icon::Moon, 11.).text_color(secondary).label("Focus on")))
+                        .when(chat.muted, |row| {
+                            row.child(icon(Icon::BellOff, 11.).text_color(secondary).label("Alerts hidden"))
+                        })
+                        .child(label(date).text_size(theme.type_scale.caption).text_color(secondary).flex_none()),
+                )
+                .child(
+                    h_flex()
+                        .gap_2()
+                        .items_center()
+                        .child(
+                            label(preview)
+                                .lines(1)
+                                .text_size(theme.type_scale.footnote)
+                                .text_color(if typing { theme.accent } else { secondary })
+                                .flex_1()
+                                .min_w_0(),
+                        )
+                        .when(unread, |row| {
+                            row.child(ui::dot(theme.accent, 8.).id(format!("unread-{}", chat.identifier)))
+                        }),
                 ),
         )
         .into_any_element()
@@ -562,7 +673,11 @@ impl Render for Sidebar {
         let rest: Vec<Arc<Chat>> =
             if has_query { visible } else { visible.into_iter().filter(|chat| !chat.pinned).collect() };
 
+        let look = ui::look(cx);
         let mut rows: Vec<(Item, u64)> = Vec::with_capacity(rest.len() + 4);
+        // Messages tiles its pinned conversations; WinUI and GNOME list them as rows under a
+        // caption of their own.
+        let (pinned, pinned_rows) = if look == ui::Look::Mac { (pinned, Vec::new()) } else { (Vec::new(), pinned) };
         if let Some(store) = &store
             && !pinned.is_empty()
         {
@@ -586,17 +701,24 @@ impl Render for Sidebar {
         self.pinned = pinned;
         if let Some(store) = &store {
             let state = store.state();
-            for chat in &rest {
-                let version = row_version(
+            let version = |chat: &Arc<Chat>| {
+                row_version(
                     chat,
                     conversation_typing(&state, &chat.guid),
                     conversation_unread(&state, &chat.guid),
                     conversation_focus(&state, &chat.guid) == FocusStatus::Silenced,
                     contacts,
                     selected.as_deref() == Some(chat.guid.as_str()),
-                );
-                rows.push((Item::Chat(chat.guid.clone()), version));
+                )
+            };
+            if !pinned_rows.is_empty() {
+                rows.push((Item::Section("Pinned"), 0));
+                rows.extend(pinned_rows.iter().map(|chat| (Item::Chat(chat.guid.clone()), version(chat))));
+                if !rest.is_empty() {
+                    rows.push((Item::Section("Recent"), 0));
+                }
             }
+            rows.extend(rest.iter().map(|chat| (Item::Chat(chat.guid.clone()), version(chat))));
         }
         if has_query && !self.results.is_empty() {
             rows.push((Item::ResultsHeader, 0));
@@ -653,49 +775,60 @@ impl Render for Sidebar {
                         .map(|tip| text(*tip).text_size(theme.type_scale.caption).text_color(theme.text.secondary)),
                 )
         });
-        let search = div().px_2().child(
-            text_field("sidebar-search")
-                .search()
-                .large()
-                .text(self.query.clone())
-                .placeholder("Search")
-                .label("Search")
-                .on_change(cx.listener(|this, e: &TextChanged, _, cx| this.set_query(e.text.clone(), cx)))
-                .on_submit(cx.listener(|this, _: &TextSubmitted, window, cx| {
-                    let first = this.list.items().into_iter().find_map(|item| match item {
-                        Item::Chat(guid) => Some(guid),
-                        _ => None,
-                    });
-                    if let Some(guid) = first {
-                        Self::open(&guid, window, cx);
-                    }
-                })),
-        );
         // On macOS the list runs up under the toolbar and the search field, which float over its
-        // top as in Messages: rows scroll under them into the toolbar's blur. AppKit insets the
-        // list by the toolbar band for that; the GPUI backends start the sidebar below the
-        // toolbar and have no inset, so there the field sits above the list.
-        let (search_head, search_float, tips_head, tips_float) = if cfg!(target_os = "macos") {
+        // top as in Messages: rows scroll under them into the toolbar's blur. Elsewhere the field
+        // lives in the window's title or header bar and the list starts under it.
+        let (search_float, tips_head, tips_float) = if look == ui::Look::Mac {
+            let search = div().px_2().child(
+                text_field("sidebar-search")
+                    .search()
+                    .large()
+                    .text(self.query.clone())
+                    .placeholder("Search")
+                    .label("Search")
+                    .on_change(cx.listener(|this, e: &TextChanged, _, cx| this.set_query(e.text.clone(), cx)))
+                    .on_submit(cx.listener(|this, _: &TextSubmitted, window, cx| {
+                        if let Some(guid) = this.first_chat() {
+                            Self::open(&guid, window, cx);
+                        }
+                    })),
+            );
             (
-                None,
                 Some(search.absolute().top(px(SEARCH_TOP)).left_0().right_0()),
                 None,
                 tips.map(|tips| div().absolute().top(px(SIDEBAR_BAND)).left_0().right_0().child(tips)),
             )
         } else {
-            (Some(search.pt(px(10.)).pb_2().flex_none()), None, tips, None)
+            (None, tips.map(|tips| tips.pt_2()), None)
         };
+        // WinUI's list pane opens with its title and the compose button, as Phone Link and Teams
+        // head their conversation lists.
+        let fluent_head = (look == ui::Look::Fluent).then(|| {
+            h_flex()
+                .id("sidebar-head")
+                .h(px(48.))
+                .pl(px(16.))
+                .pr(px(8.))
+                .flex_none()
+                .items_center()
+                .child(label("Chats").text_style(TextStyle::Title3).flex_1())
+                .child(
+                    icon_button("new-chat", Icon::SquarePen)
+                        .tooltip("New Message")
+                        .on_click(|_, window, cx| crate::ui::dispatch(window, cx, NewChat)),
+                )
+        });
         v_flex()
             .id("sidebar")
             .size_full()
             .relative()
             .context_menu(|menu, _, _| menu.item("New Message", NewChat))
-            .children(search_head)
+            .children(fluent_head)
             .children(tips_head)
             .child(
                 list("chats", &self.list, cx.processor(Self::row))
                     .inset()
-                    .estimated_row_height(px(ROW_HEIGHT))
+                    .estimated_row_height(px(if look == ui::Look::Mac { ROW_HEIGHT } else { LIST_ROW }))
                     .selection(Selection::single())
                     .on_select(cx.listener(|this, e: &SelectEvent<Item>, window, cx| match &e.key {
                         Item::Chat(guid) => Self::open(guid, window, cx),
@@ -704,12 +837,12 @@ impl Render for Sidebar {
                             let keep = this.selected.clone().map(Item::Chat).into_iter().collect();
                             this.list.set_selected(keep, cx);
                         }
-                        Item::Result(_) | Item::ResultsHeader | Item::Note => {}
+                        Item::Result(_) | Item::ResultsHeader | Item::Section(_) | Item::Note => {}
                     }))
                     .flex_1()
                     .min_h_0(),
             )
-            .child(self.footer(cx))
+            .children(self.footer(look, cx))
             .children(search_float)
             .children(tips_float)
     }

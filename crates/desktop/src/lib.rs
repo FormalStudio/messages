@@ -27,6 +27,9 @@ use nd::prelude::*;
 
 pub const DEFAULT_SIZE: (f32, f32) = (1120., 760.);
 pub const MIN_SIZE: (f32, f32) = (720., 480.);
+/// Windows and Linux fold the list and the conversation into one page when narrow, so the window
+/// can go down to a phone's width.
+pub const MIN_SIZE_PAGED: (f32, f32) = (360., 480.);
 
 pub fn app() -> Application {
     Application::new(nd::manifest!())
@@ -42,10 +45,11 @@ pub fn init(cx: &mut App) {
 }
 
 pub fn open(cx: &mut App) -> WindowHandle<root::Root> {
+    let min = if nd::theme::Preset::current() == nd::theme::Preset::MacOs { MIN_SIZE } else { MIN_SIZE_PAGED };
     let mut options = WindowOptions::main("main")
         .title("Messages")
         .size(size(px(DEFAULT_SIZE.0), px(DEFAULT_SIZE.1)))
-        .min_size(size(px(MIN_SIZE.0), px(MIN_SIZE.1)));
+        .min_size(size(px(min.0), px(min.1)));
     // `GPUIX_BACKGROUND=1` opens the window without taking focus, for scripts and screenshots.
     if std::env::var("GPUIX_BACKGROUND").is_ok_and(|v| v == "1") {
         options = options.background();
@@ -57,10 +61,11 @@ pub fn open(cx: &mut App) -> WindowHandle<root::Root> {
 /// window opens. For the appearance audit and screenshots, which render one settled frame and
 /// run none of the app's async work.
 pub fn open_demo(cx: &mut App) -> WindowHandle<root::Root> {
-    open_demo_sized(cx, DEFAULT_SIZE)
+    open_demo_with(cx, DEFAULT_SIZE, Some("iMessage;-;+14155550134"))
 }
 
-pub fn open_demo_sized(cx: &mut App, (width, height): (f32, f32)) -> WindowHandle<root::Root> {
+/// The demo window at `width` x `height` with `chat` open, or none.
+pub fn open_demo_with(cx: &mut App, (width, height): (f32, f32), chat: Option<&str>) -> WindowHandle<root::Root> {
     init(cx);
     let config = messages_core::config::Config { demo: true, ..Default::default() };
     let store = {
@@ -70,7 +75,7 @@ pub fn open_demo_sized(cx: &mut App, (width, height): (f32, f32)) -> WindowHandl
     };
     rt::handle().block_on(async {
         store.start().await;
-        store.select_chat(Some("iMessage;-;+14155550134")).await;
+        store.select_chat(chat).await;
     });
     cx.set_global(bridge::ConfigHandle(config.clone()));
     let options = WindowOptions::main("main").title("Messages").size(size(px(width), px(height)));

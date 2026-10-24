@@ -119,26 +119,34 @@ pub fn identity(shown: bool, stacked: bool, cx: &mut App) -> Option<AnyElement> 
     };
     let theme = cx.theme().clone();
     let menu_chat = chat.clone();
-    if !cfg!(target_os = "macos") {
-        // GNOME's header bar and WinUI's title bar have no room for macOS' stacked identity:
-        // the avatar beside the name and the line under it, all of it opening the details.
+    let look = ui::look(cx);
+    if look != ui::Look::Mac {
+        // The avatar beside the name and the line under it, all of it opening the details: in
+        // the content's own header on Windows, as Phone Link and Teams head a conversation, and
+        // as the header bar's title on GNOME, centred as AdwWindowTitle sets it.
+        let adwaita = look == ui::Look::Adwaita;
         return Some(
             h_flex()
                 .id("thread-identity")
                 .items_center()
-                .gap_2()
+                .gap(px(if adwaita { 8. } else { 12. }))
                 .min_w_0()
                 .on_tap(|_, window, cx| crate::ui::dispatch(window, cx, ToggleInfo))
                 .context_menu(move |menu, _, _| crate::sidebar::chat_menu(menu, &menu_chat, false))
-                .child(ui::chat_avatar(&chat, 32.))
+                .child(ui::chat_avatar(&chat, if adwaita { 28. } else { 32. }))
                 .child(
                     v_flex()
                         .min_w_0()
+                        .when(adwaita, |col| col.items_center())
                         .child(
                             h_flex()
                                 .gap_1()
                                 .items_center()
-                                .child(text(chat_title(&chat)).id("chat-title").font_weight(FontWeight::SEMIBOLD))
+                                .child(text(chat_title(&chat)).id("chat-title").font_weight(if adwaita {
+                                    FontWeight::BOLD
+                                } else {
+                                    FontWeight::SEMIBOLD
+                                }))
                                 .when(silenced, |row| {
                                     row.child(
                                         icon(Icon::Moon, 11.)
@@ -206,6 +214,48 @@ pub fn identity(shown: bool, stacked: bool, cx: &mut App) -> Option<AnyElement> 
             )
             .into_any_element(),
     )
+}
+
+/// WinUI's header over the open conversation, inside the content layer: the person, then the
+/// conversation's commands as subtle buttons (Catch me up, FaceTime, details and the rest of its
+/// menu), a divider under it.
+pub fn conversation_bar(cx: &mut App) -> Option<AnyElement> {
+    let identity = identity(true, false, cx)?;
+    let chat = bridge::store(cx).and_then(|store| {
+        let state = store.state();
+        state.selected_chat.as_deref().and_then(|g| state.chat(g)).cloned()
+    })?;
+    let theme = cx.theme().clone();
+    Some(
+        h_flex()
+            .id("conversation-bar")
+            .h(px(60.))
+            .pl(px(16.))
+            .pr(px(12.))
+            .gap(px(4.))
+            .flex_none()
+            .items_center()
+            .border_b_1()
+            .border_color(theme.separator)
+            .child(div().flex_1().min_w_0().child(identity))
+            .children(toolbar_items(true, cx))
+            .child(
+                icon_button("details", Icon::Info)
+                    .tooltip("Details")
+                    .on_click(|_, window, cx| crate::ui::dispatch(window, cx, ToggleInfo)),
+            )
+            .child(conversation_menu(&chat))
+            .into_any_element(),
+    )
+}
+
+/// The open conversation's menu behind a "More" button: WinUI's "..." and libadwaita's
+/// view-more button at the end of a header.
+pub fn conversation_menu(chat: &Chat) -> AnyElement {
+    let chat = chat.clone();
+    menu_button("conversation-menu", Icon::Ellipsis, move |menu, _, _| crate::sidebar::chat_menu(menu, &chat, false))
+        .tooltip("More")
+        .into_any_element()
 }
 
 /// Messages' conversation over the transcript: a 40 pt avatar 6 pt from the window's top, the

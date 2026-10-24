@@ -12,6 +12,7 @@ use nd::prelude::*;
 
 use crate::actions::*;
 use crate::bridge::{Bridge, ConfigHandle, StoreHandle, Topic};
+use crate::ui::Look;
 use crate::{composer, connect, details, header, new_chat, sidebar, switcher, thread};
 
 /// How long an error toast stays up.
@@ -20,6 +21,11 @@ const TOAST_FOR: Duration = Duration::from_secs(6);
 const SIDEBAR_WIDTH: f32 = 320.;
 const SIDEBAR_WIDTH_COMPACT: f32 = 248.;
 pub const INFO_WIDTH: f32 = 280.;
+/// Narrower than this the list and the open conversation take turns on Windows and Linux:
+/// libadwaita's split view collapses at 400 sp, and two panes need about 600.
+const COMPACT_WIDTH: f32 = 600.;
+/// WinUI's title bar search box at its narrowest; the title bar stretches it.
+const FLUENT_SEARCH: f32 = 320.;
 /// The narrowest the transcript gets beside the open details before the sidebar steps aside.
 const TRANSCRIPT_MIN_WIDTH: f32 = 420.;
 
@@ -227,6 +233,12 @@ impl Root {
         state.selected_chat.clone().filter(|guid| state.chat(guid).is_some())
     }
 
+    fn selected_chat(&self) -> Option<messages_core::Chat> {
+        let store = self.store()?;
+        let state = store.state();
+        state.selected_chat.as_deref().and_then(|guid| state.chat(guid)).map(|chat| (**chat).clone())
+    }
+
     pub fn start_new_chat(&mut self, cx: &mut Context<Self>) {
         self.info_open = false;
         let root = cx.weak_entity();
@@ -237,6 +249,16 @@ impl Root {
     pub fn close_new_chat(&mut self, cx: &mut Context<Self>) {
         self.new_chat = None;
         cx.notify();
+    }
+
+    /// Back from the conversation (or the new message) to the list, in a window too narrow for
+    /// both.
+    pub fn go_back(&mut self, cx: &mut Context<Self>) {
+        if self.new_chat.is_some() {
+            self.close_new_chat(cx);
+        } else if let Some(store) = self.store().cloned() {
+            crate::rt::detach(async move { store.select_chat(None).await });
+        }
     }
 
     pub fn set_info(&mut self, open: bool, cx: &mut Context<Self>) {
@@ -679,10 +701,23 @@ impl Render for Root {
         let wide = width <= 0. || width >= 900.;
 
         let shown = selected.is_some() && self.new_chat.is_none();
+        let look = crate::ui::look(cx);
+        // Under COMPACT_WIDTH the list and the conversation take turns, as libadwaita's
+        // navigation split view collapses and WinUI's list/details pattern stacks: the list
+        // fills the window, an open conversation covers it with a back button to return.
+        let compact = look != Look::Mac && width > 0. && width < COMPACT_WIDTH;
+        let paged = compact && (selected.is_some() || self.new_chat.is_some());
+        let back = paged.then(|| {
+            icon_button("back", if look == Look::Fluent { Icon::ArrowLeft } else { Icon::ChevronLeft })
+                .tooltip("Back")
+                .on_click(|_, _, cx| with_root(cx, |root, cx| root.go_back(cx)))
+        });
         // The transcript runs up under the toolbar while nothing sits above it in the content;
-        // the conversation then stands over it, avatar over name, as in Messages. GNOME and
-        // WinUI keep the conversation in the header bar, so only macOS does this.
-        let under = cfg!(target_os = "macos") && shown && self.header.read(cx).is_empty(cx);
+        // the conversation then stands over it, avatar over name, as in Messages. WinUI heads
+        // the conversation inside the content and GNOME in its header bar, so only macOS does
+        // this.
+        let under = look == Look::Mac && shown && self.header.read(cx).is_empty(cx);
+        let conversation_bar = (look == Look::Fluent && shown).then(|| header::conversation_bar(cx)).flatten();
         let stacked = if under { header::identity(true, true, cx) } else { None };
         let content = if unconfigured || offline_empty {
             self.connect.clone().into_any_element()
@@ -692,6 +727,7 @@ impl Render for Root {
             v_flex()
                 .size_full()
                 .relative()
+                .children(conversation_bar)
                 .child(self.header.clone())
                 .child(page_transition(
                     div().flex_1().min_h_0().child(self.thread.clone()),
@@ -703,6 +739,9 @@ impl Render for Root {
                     h_flex().absolute().top(px(header::IDENTITY_TOP)).left_0().right_0().justify_center().child(identity)
                 }))
                 .into_any_element()
+        } else if compact {
+            // The list fills the window; nothing stands beside it.
+            div().into_any_element()
         } else {
             empty_state(status, reason)
         };
@@ -710,23 +749,74 @@ impl Render for Root {
         let toasts = self.toast.as_ref().map(|(_, text)| toast("error", text.clone()).timeout(TOAST_FOR));
         let info = self.info_open && selected.is_some() && self.new_chat.is_none();
         let switcher = self.switcher.element(self.store(), cx);
-        // Messages' unified toolbar: compose at the start of the conversation's half, the
-        // conversation in the middle, its actions at the end.
-        let mut bar = toolbar()
-            .hide_title()
-            .navigation(
-                // A toolbar item: on macOS 26 the toolbar gives it its glass.
-                icon_button("new-chat", Icon::SquarePen)
-                    .tooltip("New Message")
-                    .on_click(|_, window, cx| crate::ui::dispatch(window, cx, NewChat)),
-            )
-            .flexible_space();
-        if !under && let Some(identity) = header::identity(shown, false, cx) {
-            bar = bar.centered_item(identity).flexible_space();
-        }
-        for item in header::toolbar_items(shown, cx) {
-            bar = bar.item(item);
-        }
+        let bar = match look {
+            Look::Mac => {
+                // Messages' unified toolbar: compose at the start of the conversation's half, the
+                // conversation in the middle, its actions at the end.
+                let mut bar = toolbar()
+                    .hide_title()
+                    .navigation(
+                        // A toolbar item: on macOS 26 the toolbar gives it its glass.
+                        icon_button("new-chat", Icon::SquarePen)
+                            .tooltip("New Message")
+                            .on_click(|_, window, cx| crate::ui::dispatch(window, cx, NewChat)),
+                    )
+                    .flexible_space();
+                if !under && let Some(identity) = header::identity(shown, false, cx) {
+                    bar = bar.centered_item(identity).flexible_space();
+                }
+                for item in header::toolbar_items(shown, cx) {
+                    bar = bar.item(item);
+                }
+                bar
+            }
+            // WinUI's TitleBar: the back button when a page covers the list, the app's icon and
+            // name, the search box in the middle.
+            Look::Fluent => {
+                let mut bar = toolbar().hide_title();
+                if let Some(back) = back {
+                    bar = bar.item(back);
+                }
+                bar.item(
+                    h_flex()
+                        .id("app-title")
+                        .gap(px(12.))
+                        .pl(px(8.))
+                        .items_center()
+                        .child(image(app_icon()).size(px(16.)).flex_none())
+                        .child(text("Messages").text_size(cx.theme().type_scale.caption)),
+                )
+                .item(sidebar::Sidebar::search_field(&self.sidebar, cx).w(px(FLUENT_SEARCH)))
+            }
+            // libadwaita's split header bars: compose, search and the primary menu over the
+            // conversation list; the conversation as the content's title, its actions at the
+            // end. Collapsed, the open page's header leads with the back button instead.
+            Look::Adwaita => {
+                let mut bar = toolbar().hide_title();
+                bar = match back {
+                    Some(back) => bar.item(back),
+                    None => bar
+                        .leading(
+                            icon_button("new-chat", Icon::SquarePen)
+                                .tooltip("New Message")
+                                .on_click(|_, window, cx| crate::ui::dispatch(window, cx, NewChat)),
+                        )
+                        .flexible_space()
+                        .leading(sidebar::Sidebar::search_field(&self.sidebar, cx))
+                        .leading(primary_menu()),
+                };
+                if let Some(identity) = header::identity(shown, false, cx) {
+                    bar = bar.centered_item(identity);
+                }
+                for item in header::toolbar_items(shown, cx) {
+                    bar = bar.item(item);
+                }
+                if shown && let Some(chat) = self.selected_chat() {
+                    bar = bar.item(header::conversation_menu(&chat));
+                }
+                bar
+            }
+        };
         let mut root = scaffold();
         if under {
             // Messages' band reaches to the name capsule's foot, 6 pt below it as the avatar sits
@@ -742,17 +832,25 @@ impl Render for Root {
                     // Messages and WinUI's navigation view give the conversation the room;
                     // AppKit's split view does that itself.
                     .collapsed(
-                        !cfg!(target_os = "macos")
-                            && info
-                            && width > 0.
-                            && width - SIDEBAR_WIDTH_COMPACT - INFO_WIDTH < TRANSCRIPT_MIN_WIDTH,
+                        paged
+                            || (look != Look::Mac
+                                && info
+                                && width > 0.
+                                && width - SIDEBAR_WIDTH_COMPACT - INFO_WIDTH < TRANSCRIPT_MIN_WIDTH),
                     )
-                    .width(px(if wide { SIDEBAR_WIDTH } else { SIDEBAR_WIDTH_COMPACT }))
+                    .width(px(if compact {
+                        width
+                    } else if wide {
+                        SIDEBAR_WIDTH
+                    } else {
+                        SIDEBAR_WIDTH_COMPACT
+                    }))
                     .min_w(px(SIDEBAR_WIDTH_COMPACT))
                     // The list scrolls under the toolbar and the search field (52 pt of toolbar,
                     // then the band down to sidebar::SIDEBAR_BAND).
-                    .under_toolbar()
-                    .toolbar_extension(sidebar::SIDEBAR_BAND - 52.)
+                    .when(look == Look::Mac, |pane| {
+                        pane.under_toolbar().toolbar_extension(sidebar::SIDEBAR_BAND - 52.)
+                    })
                     .child(self.sidebar.clone()),
             )
             .content(content)
@@ -776,12 +874,30 @@ impl Render for Root {
     }
 }
 
+/// libadwaita's primary menu at the end of the sidebar's header bar.
+fn primary_menu() -> AnyElement {
+    menu_button("primary-menu", Icon::Menu, |menu, _, _| {
+        menu.item("New Message", NewChat)
+            .separator()
+            .item("Preferences", OpenSettings)
+            .item("Report an Issue\u{2026}", ReportIssue)
+    })
+    .tooltip("Main Menu")
+    .into_any_element()
+}
+
+/// The app's icon, as WinUI's title bar shows it beside the name.
+fn app_icon() -> ImageSource {
+    static ICON: &[u8] = include_bytes!("../../../packaging/linux/dev.formalsnake.messages.png");
+    ImageSource::bytes("app-icon", ICON.to_vec())
+}
+
 /// Switching conversations brings the transcript in the way the platform brings in a page:
 /// WinUI's page entrance (a short rise on "fast out, slow in" over 167 ms), the look's own
 /// ease-out elsewhere. Keyed by the conversation, so each switch enters afresh. AppKit's split
 /// view swaps content without motion, as Messages does.
 fn page_transition(page: Div, chat: &str, cx: &App) -> AnyElement {
-    if cfg!(target_os = "macos") {
+    if crate::ui::look(cx) == Look::Mac {
         return page.into_any_element();
     }
     let theme = cx.theme();

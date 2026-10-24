@@ -1,14 +1,41 @@
-//! The window's frame (sidebar, its search, the conversation header, the composer) under the
-//! Fluent and Adwaita presets, drawn by GPUI headless on the demo data and written as PNGs to
-//! `$CARGO_TARGET_TMPDIR/frame/`. Runs on macOS (Metal) and Linux (wgpu), where GPUI renders
-//! headless.
+//! The window's frame (sidebar, its search, the conversation header, the composer, the empty and
+//! new message states) under the Fluent and Adwaita presets, drawn by GPUI headless on the demo
+//! data and written as PNGs to `$CARGO_TARGET_TMPDIR/frame/`. Runs on macOS (Metal) and Linux
+//! (wgpu), where GPUI renders headless. nd reads `ND_PRESET` once per process, so each look runs
+//! in a child process of its own.
 
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use nd_backend_gpui::GpuiHost;
+use nd_backend_gpui::{GpuiBackend, GpuiChrome, GpuiHost};
 use nd_gpui::gpui::HeadlessAppContext;
 use nd_theme::{OsTheme, Preset, Scheme, ThemeRegistry};
+use nd_ui::semantics::{MouseButton, PointerPhase, SyntheticInput};
+use nd_ui::{Point, WindowId};
+
+const ALEX: &str = "iMessage;-;+14155550134";
+
+#[derive(Clone, Copy)]
+enum Scene {
+    /// Alex's conversation open.
+    Chat,
+    /// Nothing selected.
+    Empty,
+    /// The new message screen.
+    NewMessage,
+    /// A draft in the field and the "+" menu open.
+    PlusMenu,
+}
+
+const SCENES: [(&str, Scene, (f32, f32)); 7] = [
+    ("wide", Scene::Chat, messages::DEFAULT_SIZE),
+    ("narrow", Scene::Chat, (760., 620.)),
+    ("paged-list", Scene::Empty, (400., 700.)),
+    ("paged-chat", Scene::Chat, (400., 700.)),
+    ("empty", Scene::Empty, messages::DEFAULT_SIZE),
+    ("new", Scene::NewMessage, messages::DEFAULT_SIZE),
+    ("plus", Scene::PlusMenu, messages::DEFAULT_SIZE),
+];
 
 fn settle(cx: &mut HeadlessAppContext, host: &GpuiHost) {
     for _ in 0..6 {
@@ -19,6 +46,27 @@ fn settle(cx: &mut HeadlessAppContext, host: &GpuiHost) {
         });
     }
     cx.run_until_parked();
+}
+
+fn centre(host: &GpuiHost, window: WindowId, id: &str) -> Option<Point> {
+    host.read(|app| {
+        let tree = app.semantic_window(window)?;
+        let node = tree.root.iter().find(|n| n.test_id.as_deref() == Some(id))?;
+        let b = node.bounds?;
+        Some(Point { x: b.origin.x + b.size.width / 2., y: b.origin.y + b.size.height / 2. })
+    })
+}
+
+fn click(cx: &mut HeadlessAppContext, host: &GpuiHost, window: WindowId, at: Point) {
+    cx.update(|gcx| {
+        host.update(gcx, |app| {
+            for phase in [PointerPhase::Down, PointerPhase::Up] {
+                let input = SyntheticInput::Pointer { phase, at, button: MouseButton::Left, click_count: 1 };
+                app.synthesize(window, &input).expect("posted");
+            }
+        })
+    });
+    settle(cx, host);
 }
 
 fn main() {
@@ -32,37 +80,66 @@ fn main() {
     }
     let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("frame");
     std::fs::create_dir_all(&dir).unwrap();
-    let presets: Vec<Preset> = match std::env::var("FRAME_PRESETS") {
-        Ok(list) => list.split(',').filter_map(Preset::parse).collect(),
-        Err(_) => vec![Preset::Fluent, Preset::Adwaita],
+    let Some(preset) = Preset::forced() else {
+        let presets = std::env::var("FRAME_PRESETS").unwrap_or_else(|_| "fluent,adwaita".to_owned());
+        for name in presets.split(',').filter(|n| !n.is_empty()) {
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .env("ND_PRESET", name)
+                .status()
+                .unwrap();
+            assert!(status.success(), "the {name} captures failed");
+        }
+        return;
     };
-    let sizes = [("wide", messages::DEFAULT_SIZE), ("narrow", (560., 700.))];
-    for preset in presets {
-        for scheme in [Scheme::Light, Scheme::Dark] {
-            for (label, size) in sizes {
-                let text = nd_gpui::gpui_platform::current_platform(true).text_system();
-                let mut cx = HeadlessAppContext::with_platform(
-                    text,
-                    Arc::new(()),
-                    nd_gpui::gpui_platform::current_headless_renderer,
-                );
-                let mut window = None;
-                let host = cx.update(|cx| {
-                    GpuiHost::builder().quit_when_empty(false).start(cx, |app| {
-                        window = Some(messages::open_demo_sized(app, size).id());
-                    })
-                });
-                let mut registry = ThemeRegistry::new(preset);
-                registry.set_os(OsTheme { scheme: Some(scheme), ..registry.os().clone() });
-                host.backend().set_theme(registry);
-                settle(&mut cx, &host);
-                let window = window.expect("the window opened");
-                let capture = host.job(|app| app.capture(window)).expect("capture");
-                let name = format!("{}-{}-{label}.png", format!("{preset:?}").to_lowercase(), scheme_name(scheme));
-                let out = dir.join(name);
-                std::fs::write(&out, &capture.png).unwrap();
-                println!("screenshot {}", out.display());
+    for scheme in [Scheme::Light, Scheme::Dark] {
+        for (label, scene, size) in SCENES {
+            let text = nd_gpui::gpui_platform::current_platform(true).text_system();
+            let mut cx = HeadlessAppContext::with_platform(
+                text,
+                Arc::new(()),
+                nd_gpui::gpui_platform::current_headless_renderer,
+            );
+            let chat = (!matches!(scene, Scene::Empty)).then_some(ALEX);
+            let mut window = None;
+            let host = cx.update(|cx| {
+                GpuiHost::builder().quit_when_empty(false).start(cx, |app| {
+                    // The runtime installs the drawn menus and alerts; a bare host has none.
+                    let backend = app.backend_as::<GpuiBackend>().expect("GPUI backend").clone();
+                    app.set_global(nd::components::Chrome(GpuiChrome::new(backend)));
+                    window = Some(messages::open_demo_with(app, size, chat).id());
+                })
+            });
+            let mut registry = ThemeRegistry::new(preset);
+            // Animations off, so every capture shows where an entrance or a fade lands.
+            let mut os = OsTheme { scheme: Some(scheme), ..registry.os().clone() };
+            os.metrics.reduce_motion = Some(true);
+            registry.set_os(os);
+            host.backend().set_theme(registry);
+            cx.update(|gcx| host.update(gcx, |app| app.set_reduce_motion(true)));
+            settle(&mut cx, &host);
+            let window = window.expect("the window opened");
+            match scene {
+                Scene::Chat | Scene::Empty => {}
+                Scene::NewMessage => {
+                    cx.update(|gcx| {
+                        host.update(gcx, |app| messages::root::with_root(app, |root, cx| root.start_new_chat(cx)))
+                    });
+                    settle(&mut cx, &host);
+                }
+                Scene::PlusMenu => {
+                    let at = centre(&host, window, "composer.attach").expect("the plus button is laid out");
+                    click(&mut cx, &host, window, at);
+                    assert!(host.backend().menu_open(window), "the plus opened its menu");
+                }
             }
+            // Reduced motion still fades a page in: wait it out so the capture shows where it lands.
+            std::thread::sleep(std::time::Duration::from_millis(400));
+            settle(&mut cx, &host);
+            let capture = host.job(|app| app.capture(window)).expect("capture");
+            let name = format!("{}-{}-{label}.png", format!("{preset:?}").to_lowercase(), scheme_name(scheme));
+            let out = dir.join(name);
+            std::fs::write(&out, &capture.png).unwrap();
+            println!("screenshot {}", out.display());
         }
     }
 }

@@ -6,6 +6,23 @@ use std::path::Path;
 use messages_core::{Chat, Handle, chat_title, handle_name};
 use nd::prelude::*;
 
+/// The frame the window draws around the conversation: Messages' own on macOS, a Windows 11
+/// chat app's under Fluent, a GNOME one's under libadwaita.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Look {
+    Mac,
+    Fluent,
+    Adwaita,
+}
+
+pub fn look(cx: &App) -> Look {
+    match cx.theme().preset {
+        nd::theme::Preset::MacOs => Look::Mac,
+        nd::theme::Preset::Fluent => Look::Fluent,
+        _ => Look::Adwaita,
+    }
+}
+
 /// What `image()` shows for a cached file path or a data URL (contact photos, fixtures).
 pub fn image_source(src: &str) -> Option<ImageSource> {
     if let Some(rest) = src.strip_prefix("data:") {

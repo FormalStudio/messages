@@ -27,6 +27,7 @@ ndshell = { git = "https://github.com/FormalStudio/NativeDesktop", branch = "mai
 nd-backend-gpui = { git = "https://github.com/FormalStudio/NativeDesktop", branch = "main", features = ["capture"] }
 nd-gpui = { git = "https://github.com/FormalStudio/NativeDesktop", branch = "main", features = ["platform", "test-support"] }
 nd-theme = { git = "https://github.com/FormalStudio/NativeDesktop", branch = "main" }
+nd-ui = { git = "https://github.com/FormalStudio/NativeDesktop", branch = "main" }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 ndshell = { git = "https://github.com/FormalStudio/NativeDesktop", branch = "main" }

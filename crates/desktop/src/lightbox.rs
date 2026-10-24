@@ -252,6 +252,7 @@ impl Lightbox {
                     .size_full()
                     .animate(Animation::ease_out(FADE))
                     .enter_from(|pose| pose.opacity(0.))
+                    .child(div().h(look.title_bar).flex_none())
                     .child(top)
                     .child(middle)
                     .child(bottom),
@@ -379,6 +380,9 @@ struct Look {
     radius: Pixels,
     centered_title: bool,
     open_label: &'static str,
+    /// Room left at the top for the window's title bar: WinUI keeps content under its title bar
+    /// and its caption buttons, so the viewer's commands start below them.
+    title_bar: Pixels,
 }
 
 impl Look {
@@ -392,6 +396,12 @@ impl Look {
             radius: if adwaita { px(12.) } else { theme.radius.lg },
             centered_title: adwaita,
             open_label: if adwaita { "Open With\u{2026}" } else { "Open with" },
+            // nd's Fluent title bar: a regular control and its padding (48 px with a search box).
+            title_bar: if theme.preset == Preset::Fluent {
+                theme.control.regular + theme.spacing.sm * 2.
+            } else {
+                px(0.)
+            },
         }
     }
 

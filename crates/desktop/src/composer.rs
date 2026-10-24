@@ -41,10 +41,6 @@ const EFFECTS: [(&str, &str); 13] = [
 
 actions!(composer, [EditLast, PasteAttachments, ChooseFiles, ShowGifs, ShowEffects, ShowSendLater, AttachByPath]);
 
-/// macOS opens the "+" as a native menu above the button, as Messages does; the drawn backends
-/// keep the popover, which their look already gives a menu's insets.
-const NATIVE_PLUS_MENU: bool = cfg!(target_os = "macos");
-
 pub const CONTEXT: &str = "Composer";
 
 pub fn init(cx: &mut App) {
@@ -59,7 +55,6 @@ enum Popover {
     #[default]
     None,
     Gif,
-    Apps,
     Effects,
     Schedule,
     Path,
@@ -155,13 +150,8 @@ impl Composer {
 
     fn event(&mut self, event: &ComposerEvent, window: &mut Window, cx: &mut Context<Self>) {
         match event {
-            ComposerEvent::Attach if NATIVE_PLUS_MENU => {
-                self.plus_menu(window, cx);
-                return;
-            }
             ComposerEvent::Attach => {
-                self.popover = if self.popover == Popover::Apps { Popover::None } else { Popover::Apps };
-                cx.notify();
+                self.plus_menu(window, cx);
                 return;
             }
             ComposerEvent::Send => {
@@ -523,8 +513,9 @@ impl Composer {
         )
     }
 
-    /// Messages' "+" on macOS: a native menu over the button, one row per thing to add, each
-    /// opening its panel beside the field as the drawn menu's rows do.
+    /// The "+": a menu over the button, one row per thing to add, each opening its panel beside the
+    /// field. AppKit's menu on macOS as in Messages, the look's own elsewhere (WinUI's
+    /// MenuFlyout, libadwaita's popover menu).
     fn plus_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let (klipy, effects, can_schedule) = self.plus_offers(cx);
         let mut menu = ContextMenu::default()
@@ -544,11 +535,19 @@ impl Composer {
         let menu =
             menu.separator().entry(MenuItem::action("Attach by Path\u{2026}", AttachByPath).icon(Icon::FileText));
         let window = window.id();
+        if ui::look(cx) != ui::Look::Mac {
+            // The drawn menu hangs off the button itself, above it.
+            if let Some((plus, _)) = cx.node_with_id(window, "composer.attach") {
+                cx.focus_id(window, "composer.field");
+                nd::components::services::show_context_menu(cx, window, plus, 0., 0., menu);
+            }
+            return;
+        }
         // The semantic tree is out of reach while this handler holds the window: the next turn.
         nd::system::spawn(async {}, move |(), cx| {
             let Some(tree) = cx.semantic_window(window) else { return };
             let find = |id: &str| tree.root.iter().find(|n| n.test_id.as_deref() == Some(id)).map(|n| (n.id, n.bounds));
-            // The "+" is drawn inside the composer's own view, so the menu hangs off the
+            // AppKit draws the "+" inside the composer's own view, so the menu hangs off the
             // composer at the button's offset in it.
             let (Some((node, Some(composer))), Some((_, Some(plus)))) = (find("composer"), find("composer.attach"))
             else {
@@ -571,60 +570,6 @@ impl Composer {
         cx.notify();
     }
 
-    /// The "+" menu: files, GIFs, effects, send later and attach by path, each opening its own
-    /// panel in the same place.
-    fn apps_popover(&self, klipy: bool, effects: bool, can_schedule: bool, cx: &mut Context<Self>) -> AnyElement {
-        let go = |to: Popover| {
-            cx.listener(move |this: &mut Self, _: &ClickEvent, _, cx| {
-                this.popover = to;
-                if to == Popover::Gif && this.gif.items.is_empty() {
-                    this.search_gifs(cx);
-                }
-                cx.notify();
-            })
-        };
-        let item = |id: &'static str, glyph: Icon, title: &'static str| {
-            button(id, title).icon(glyph).bezel(Bezel::Borderless).w_full()
-        };
-        popover("composer-apps-menu")
-            .placement(Placement::Above)
-            .w(px(220.))
-            .p_1()
-            .on_dismiss(cx.listener(|this, _: &Dismissed, _, cx| {
-                if this.popover == Popover::Apps {
-                    this.popover = Popover::None;
-                    cx.notify();
-                }
-            }))
-            .child(
-                v_flex()
-                    .gap_0p5()
-                    .items_start()
-                    .child(item("apps-files", Icon::Image, "Photos and Files\u{2026}").on_click(cx.listener(
-                        |this, _: &ClickEvent, window, cx| {
-                            this.popover = Popover::None;
-                            this.choose_files(window, cx);
-                            cx.notify();
-                        },
-                    )))
-                    .when(klipy, |col| col.child(item("gif", Icon::Smile, "GIFs").on_click(go(Popover::Gif))))
-                    .when(effects, |col| {
-                        col.child(
-                            item(
-                                "effect",
-                                Icon::Star,
-                                if self.effect.is_some() { "Message Effect \u{2022}" } else { "Message Effect" },
-                            )
-                            .on_click(go(Popover::Effects)),
-                        )
-                    })
-                    .when(can_schedule, |col| {
-                        col.child(item("send-later", Icon::Clock, "Send Later").on_click(go(Popover::Schedule)))
-                    })
-                    .child(item("attach-path", Icon::FileText, "Attach by Path\u{2026}").on_click(go(Popover::Path))),
-            )
-            .into_any_element()
-    }
 
     /// Stages the typed path (`~` is the home folder) when it names a file.
     fn submit_path(&mut self, cx: &mut Context<Self>) {
@@ -742,13 +687,12 @@ impl Render for Composer {
         self.sync(cx);
         let Some(store) = bridge::store(cx) else { return div().into_any_element() };
         let Some(chat) = self.chat.clone() else { return div().into_any_element() };
-        let (sms, capabilities, replying, editing, scheduled) = {
+        let (sms, replying, editing, scheduled) = {
             let state = store.state();
             let messages = conversation_messages(&state, &chat);
             let find = |guid: Option<&String>| guid.and_then(|g| messages.iter().find(|m| &m.guid == g).cloned());
             (
                 state.chat(&chat).is_some_and(|c| c.service != Service::IMessage),
-                state.capabilities,
                 find(state.replying_to.get(&chat)),
                 find(state.editing.get(&chat)),
                 state.scheduled.iter().filter(|s| s.chat_guid == chat).cloned().collect::<Vec<_>>(),
@@ -772,9 +716,6 @@ impl Render for Composer {
         } else {
             "iMessage"
         };
-        let klipy = self.klipy.is_some();
-        let effects = capabilities.effects && !sms && editing.is_none();
-        let can_schedule = capabilities.scheduled_messages && !self.draft.text.trim().is_empty();
         let now = ui::now_ms();
 
         let scheduled_rows = scheduled.into_iter().map(|item| {
@@ -813,7 +754,6 @@ impl Render for Composer {
         // Messages' "+": everything that is not typing lives in one menu beside the field.
         let popover = match self.popover {
             Popover::None => None,
-            Popover::Apps => Some(self.apps_popover(klipy, effects, can_schedule, cx)),
             Popover::Gif => Some(self.gif_popover(cx)),
             Popover::Effects => Some(self.effects_popover(cx)),
             Popover::Schedule => Some(self.schedule_popover(cx)),
