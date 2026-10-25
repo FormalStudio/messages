@@ -107,6 +107,7 @@ fn grab_macos(pid: u32, out: &std::path::Path) {
 }
 
 /// The on-screen windows of `pid`, largest first: (id, width, height).
+#[cfg(target_os = "macos")]
 fn windows_of(pid: u32) -> Vec<(u32, u32, u32)> {
     let script = format!(
         "import CoreGraphics\nlet l = CGWindowListCopyWindowInfo([.optionOnScreenOnly], kCGNullWindowID) as! [[String: Any]]\nfor w in l where (w[\"kCGWindowOwnerPID\"] as? Int) == {pid} {{ let b = w[\"kCGWindowBounds\"] as! [String: Any]; print(w[\"kCGWindowNumber\"]!, b[\"Width\"]!, b[\"Height\"]!) }}"
@@ -163,14 +164,28 @@ fn real_hover_and_lightbox_video_are_captured() {
     let at = video.bounding_box().unwrap().expect("the video block is laid out");
     app.mouse().click(at.x + at.width / 2., at.y + at.height / 2.).unwrap();
     // Quick Look opens in its own panel: find it among the app's windows and capture it.
-    std::thread::sleep(Duration::from_millis(2000));
-    let windows = windows_of(app.pid());
-    println!("windows {windows:?}");
-    assert!(windows.len() >= 2, "Quick Look opened a panel beside the main window: {windows:?}");
-    for (i, (id, _, _)) in windows.iter().enumerate() {
-        let shot = dir.join(format!("shot-quicklook-{i}.png"));
-        let _ =
-            std::process::Command::new("screencapture").args(["-x", "-o", "-l", &id.to_string()]).arg(&shot).status();
+    #[cfg(target_os = "macos")]
+    {
+        std::thread::sleep(Duration::from_millis(2000));
+        let windows = windows_of(app.pid());
+        println!("windows {windows:?}");
+        assert!(windows.len() >= 2, "Quick Look opened a panel beside the main window: {windows:?}");
+        for (i, (id, _, _)) in windows.iter().enumerate() {
+            let shot = dir.join(format!("shot-quicklook-{i}.png"));
+            let _ = std::process::Command::new("screencapture")
+                .args(["-x", "-o", "-l", &id.to_string()])
+                .arg(&shot)
+                .status();
+            println!("screenshot {}", shot.display());
+        }
+    }
+    // Elsewhere the click opens the app's own viewer over the window.
+    #[cfg(not(target_os = "macos"))]
+    {
+        expect(&app.get_by_test_id("lightbox-video-demo-video-1")).to_be_visible().unwrap();
+        std::thread::sleep(Duration::from_millis(1000));
+        let shot = dir.join("shot-viewer.png");
+        app.screenshot(&shot, None).unwrap();
         println!("screenshot {}", shot.display());
     }
     println!("{}", app.snapshot().unwrap());
