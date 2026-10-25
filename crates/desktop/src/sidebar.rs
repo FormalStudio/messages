@@ -34,6 +34,10 @@ pub const SIDEBAR_BAND: f32 = 106.;
 const PINNED_COLUMNS: usize = 3;
 const PINNED_INSET: f32 = 10.;
 const PINNED_GAP: f32 = 10.;
+/// The pinned strip on WinUI and GNOME: four a row at the list's own avatar step, as Phone Link
+/// heads its conversations with the pinned people.
+const PINNED_LIST_COLUMNS: usize = 4;
+const PINNED_LIST_PICTURE: f32 = 48.;
 /// The sidebar's width before the list has laid out once.
 const SIDEBAR_DEFAULT: f32 = 320.;
 /// Long enough that two lines of a row clip it, short enough to keep a novel out of the label.
@@ -51,8 +55,6 @@ const OPERATOR_TIPS: [&str; 4] = [
 pub enum Item {
     /// The pinned conversations' grid, the list's first row so it scrolls away with the list.
     Pinned,
-    /// A section's caption over its rows, where pinned conversations are rows (WinUI, GNOME).
-    Section(&'static str),
     Chat(String),
     ResultsHeader,
     /// A search hit, by message guid.
@@ -271,14 +273,6 @@ impl Sidebar {
                     look => list_row(&guid, look, selected, cx),
                 }
             }
-            Item::Section(title) => label(title)
-                .text_style(TextStyle::Caption1)
-                .font_weight(FontWeight::SEMIBOLD)
-                .secondary()
-                .ml_3()
-                .mt_3()
-                .mb_1()
-                .into_any_element(),
             Item::ResultsHeader => {
                 label("Messages").text_style(TextStyle::Caption1).secondary().ml_3().mt_3().into_any_element()
             }
@@ -341,12 +335,27 @@ impl Sidebar {
     fn pinned_strip(&self, pinned: &[Arc<Chat>], cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme().clone();
         let store = bridge::store(cx);
+        let look = ui::look(cx);
+        let width = self.list.handle().0.borrow().width().unwrap_or(f64::from(SIDEBAR_DEFAULT)) as f32;
         // Messages keeps three pinned conversations a row and grows them with the sidebar: the
         // tiles share the row 10 pt in from each side, the picture 0.56 of a tile plus 17 pt
-        // (73 pt at the 320 pt default, measured).
-        let width = self.list.handle().0.borrow().width().unwrap_or(f64::from(SIDEBAR_DEFAULT)) as f32;
-        let tile = ((width - 2. * PINNED_INSET) / PINNED_COLUMNS as f32).max(60.);
-        let picture = (tile * 0.56 + 17.).round();
+        // (73 pt at the 320 pt default, measured). WinUI and GNOME keep four a row at a fixed
+        // size, inset and rounded as the list's own selection is so a tile's fill lines up with
+        // a row's.
+        let (columns, inset, gap) = match look {
+            ui::Look::Mac => (PINNED_COLUMNS, PINNED_INSET, PINNED_GAP),
+            ui::Look::Fluent => (PINNED_LIST_COLUMNS, 4., 4.),
+            ui::Look::Adwaita => (PINNED_LIST_COLUMNS, 6., 4.),
+        };
+        let picture = if look == ui::Look::Mac {
+            let tile = ((width - 2. * inset) / columns as f32).max(60.);
+            (tile * 0.56 + 17.).round()
+        } else {
+            PINNED_LIST_PICTURE
+        };
+        // The list's selection on the sidebar: libadwaita's tenth of the text colour, WinUI's
+        // subtle fill, which on Fluent carries its accent pill under the name.
+        let list_selection = theme.hover(theme.surface.sidebar);
         let cell = |chat: &Arc<Chat>| {
             let unread = store.as_ref().is_some_and(|s| conversation_unread(&s.state(), &chat.guid));
             let selected = self.selected.as_deref() == Some(chat.guid.as_str());
@@ -356,6 +365,11 @@ impl Sidebar {
             };
             let guid = chat.guid.clone();
             let menu_chat = chat.clone();
+            let name_color = match look {
+                ui::Look::Mac if selected => theme.accent_container.fg,
+                ui::Look::Mac => theme.text.secondary,
+                _ => theme.text.primary,
+            };
             v_flex()
                 .id(format!("pinned-{}", chat.guid))
                 .flex_1()
@@ -364,18 +378,23 @@ impl Sidebar {
                 .gap_1()
                 .py_2()
                 .px_1()
-                .rounded(px(12.))
-                .when(selected, |cell| cell.bg(theme.accent))
+                .relative()
+                .rounded(if look == ui::Look::Mac { px(12.) } else { theme.radius.md })
+                .when(selected, |cell| cell.bg(if look == ui::Look::Mac { theme.accent } else { list_selection }))
                 .on_tap(move |_, window, cx| Self::open(&guid, window, cx))
                 .context_menu(move |menu, _, _| chat_menu(menu, &menu_chat, true))
                 .child(div().relative().child(ui::chat_avatar(chat, picture)).when(unread, |cell| {
                     cell.child(
-                        ui::dot(theme.accent, 14.)
+                        ui::dot(theme.accent, if look == ui::Look::Mac { 14. } else { 12. })
                             .absolute()
-                            .top(px(2.))
-                            .right(px(2.))
+                            .top(px(if look == ui::Look::Mac { 2. } else { 0. }))
+                            .right(px(if look == ui::Look::Mac { 2. } else { 0. }))
                             .border_2()
-                            .border_color(theme.surface.sidebar),
+                            .border_color(if selected && look != ui::Look::Mac {
+                                list_selection
+                            } else {
+                                theme.surface.sidebar
+                            }),
                     )
                 }))
                 // One line at the tile's width, cut at the tail, as Messages titles a pinned chat.
@@ -383,16 +402,31 @@ impl Sidebar {
                     label(name)
                         .id(format!("pinned-{}.title", chat.guid))
                         .text_size(theme.type_scale.caption)
+                        .when(unread && look != ui::Look::Mac, |name| name.font_weight(FontWeight::BOLD))
                         .max_w_full()
-                        .text_color(if selected { theme.accent_container.fg } else { theme.text.secondary }),
+                        .text_color(name_color),
                 )
+                .when(selected && look == ui::Look::Fluent, |cell| {
+                    cell.child(
+                        h_flex().absolute().bottom(px(2.)).left_0().right_0().justify_center().child(
+                            div().w(px(16.)).h(px(3.)).rounded_full().bg(theme.accent),
+                        ),
+                    )
+                })
                 .into_any_element()
         };
-        let rows = pinned.chunks(PINNED_COLUMNS).map(|chunk| {
-            let fillers = (chunk.len()..PINNED_COLUMNS).map(|_| div().flex_1().into_any_element());
-            h_flex().gap(px(PINNED_GAP)).children(chunk.iter().map(cell)).children(fillers)
+        let rows = pinned.chunks(columns).map(|chunk| {
+            let fillers = (chunk.len()..columns).map(|_| div().flex_1().into_any_element());
+            h_flex().gap(px(gap)).children(chunk.iter().map(cell)).children(fillers)
         });
-        v_flex().id("pinned").px(px(PINNED_INSET)).pb_2().gap(px(PINNED_GAP)).children(rows).into_any_element()
+        v_flex()
+            .id("pinned")
+            .px(px(inset))
+            .pb_2()
+            .when(look != ui::Look::Mac, |strip| strip.pt_1())
+            .gap(px(gap))
+            .children(rows)
+            .into_any_element()
     }
 
     /// The connection line. GNOME apps keep settings in the primary menu and speak up about the
@@ -676,9 +710,6 @@ impl Render for Sidebar {
 
         let look = ui::look(cx);
         let mut rows: Vec<(Item, u64)> = Vec::with_capacity(rest.len() + 4);
-        // Messages tiles its pinned conversations; WinUI and GNOME list them as rows under a
-        // caption of their own.
-        let (pinned, pinned_rows) = if look == ui::Look::Mac { (pinned, Vec::new()) } else { (Vec::new(), pinned) };
         if let Some(store) = &store
             && !pinned.is_empty()
         {
@@ -712,13 +743,6 @@ impl Render for Sidebar {
                     selected.as_deref() == Some(chat.guid.as_str()),
                 )
             };
-            if !pinned_rows.is_empty() {
-                rows.push((Item::Section("Pinned"), 0));
-                rows.extend(pinned_rows.iter().map(|chat| (Item::Chat(chat.guid.clone()), version(chat))));
-                if !rest.is_empty() {
-                    rows.push((Item::Section("Recent"), 0));
-                }
-            }
             rows.extend(rest.iter().map(|chat| (Item::Chat(chat.guid.clone()), version(chat))));
         }
         if has_query && !self.results.is_empty() {
@@ -838,7 +862,7 @@ impl Render for Sidebar {
                             let keep = this.selected.clone().map(Item::Chat).into_iter().collect();
                             this.list.set_selected(keep, cx);
                         }
-                        Item::Result(_) | Item::ResultsHeader | Item::Section(_) | Item::Note => {}
+                        Item::Result(_) | Item::ResultsHeader | Item::Note => {}
                     }))
                     .flex_1()
                     .min_h_0(),

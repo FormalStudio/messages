@@ -1,8 +1,8 @@
-//! The window's frame (sidebar, its search, the conversation header, the composer, the empty and
-//! new message states) under the Fluent and Adwaita presets, drawn by GPUI headless on the demo
-//! data and written as PNGs to `$CARGO_TARGET_TMPDIR/frame/`. Runs on macOS (Metal) and Linux
-//! (wgpu), where GPUI renders headless. nd reads `ND_PRESET` once per process, so each look runs
-//! in a child process of its own.
+//! The window's frame (sidebar, its search and pins, the conversation header, the details, the
+//! composer, the empty and new message states) under the Fluent and Adwaita presets, drawn by
+//! GPUI headless on the demo data and written as PNGs to `$CARGO_TARGET_TMPDIR/frame/`. Runs on
+//! macOS (Metal) and Linux (wgpu), where GPUI renders headless. nd reads `ND_PRESET` once per
+//! process, so each look runs in a child process of its own.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -25,9 +25,13 @@ enum Scene {
     NewMessage,
     /// A draft in the field and the "+" menu open.
     PlusMenu,
+    /// Alex's conversation with the details opened from the conversation's title.
+    Details,
+    /// Five pinned conversations, Alex's open among them and an unread one.
+    Pins,
 }
 
-const SCENES: [(&str, Scene, (f32, f32)); 7] = [
+const SCENES: [(&str, Scene, (f32, f32)); 10] = [
     ("wide", Scene::Chat, messages::DEFAULT_SIZE),
     ("narrow", Scene::Chat, (760., 620.)),
     ("paged-list", Scene::Empty, (400., 700.)),
@@ -35,7 +39,15 @@ const SCENES: [(&str, Scene, (f32, f32)); 7] = [
     ("empty", Scene::Empty, messages::DEFAULT_SIZE),
     ("new", Scene::NewMessage, messages::DEFAULT_SIZE),
     ("plus", Scene::PlusMenu, messages::DEFAULT_SIZE),
+    ("details", Scene::Details, messages::DEFAULT_SIZE),
+    ("pins", Scene::Pins, messages::DEFAULT_SIZE),
+    ("narrow-pins", Scene::Pins, (760., 620.)),
 ];
+
+/// Pinned on top of the demo's own pin. The store saves pins to the config file, which the
+/// children keep under the target directory.
+const PINS: [&str; 4] =
+    [ALEX, "iMessage;+;chat881204957120", "iMessage;-;+14155550199", "iMessage;-;priya.natarajan@icloud.com"];
 
 fn settle(cx: &mut HeadlessAppContext, host: &GpuiHost) {
     for _ in 0..6 {
@@ -85,6 +97,7 @@ fn main() {
         for name in presets.split(',').filter(|n| !n.is_empty()) {
             let status = std::process::Command::new(std::env::current_exe().unwrap())
                 .env("ND_PRESET", name)
+                .env("XDG_CONFIG_HOME", dir.join("config"))
                 .status()
                 .unwrap();
             assert!(status.success(), "the {name} captures failed");
@@ -114,12 +127,29 @@ fn main() {
             let mut os = OsTheme { scheme: Some(scheme), ..registry.os().clone() };
             os.metrics.reduce_motion = Some(true);
             registry.set_os(os);
+            // The app reads its own registry (`cx.theme()`), the backend draws from its copy.
+            cx.update(|gcx| host.update(gcx, |app| nd::theme::update_registry(app, |r| *r = registry.clone())));
             host.backend().set_theme(registry);
             cx.update(|gcx| host.update(gcx, |app| app.set_reduce_motion(true)));
             settle(&mut cx, &host);
             let window = window.expect("the window opened");
             match scene {
                 Scene::Chat | Scene::Empty => {}
+                Scene::Pins => {
+                    cx.update(|gcx| {
+                        host.update(gcx, |app| {
+                            let store = messages::bridge::store(app).expect("the demo store");
+                            for guid in PINS {
+                                store.toggle_pin(guid);
+                            }
+                            // The pump that carries store events to the views does not run
+                            // headless; hand the list change over directly.
+                            messages::bridge::Bridge::deliver(app, Ok(messages_core::store::StoreEvent::ChatList));
+                        })
+                    });
+                    settle(&mut cx, &host);
+                    assert!(centre(&host, window, &format!("pinned-{ALEX}")).is_some(), "Alex is pinned");
+                }
                 Scene::NewMessage => {
                     cx.update(|gcx| {
                         host.update(gcx, |app| messages::root::with_root(app, |root, cx| root.start_new_chat(cx)))
@@ -130,6 +160,11 @@ fn main() {
                     let at = centre(&host, window, "composer.attach").expect("the plus button is laid out");
                     click(&mut cx, &host, window, at);
                     assert!(host.backend().menu_open(window), "the plus opened its menu");
+                }
+                Scene::Details => {
+                    let at = centre(&host, window, "thread-identity").expect("the title is laid out");
+                    click(&mut cx, &host, window, at);
+                    assert!(centre(&host, window, "details-panel").is_some(), "the title opened the details");
                 }
             }
             // Reduced motion still fades a page in: wait it out so the capture shows where it lands.
