@@ -27,6 +27,10 @@ window opens on the last known state before the server answers. It idles at
 |---|---|
 | ![Details panel](docs/images/details.png) | ![Conversation switcher](docs/images/switcher.png) |
 
+On Linux, with the Adwaita look:
+
+![A thread on Linux](docs/images/linux-thread.png)
+
 ## Features
 
 | | SIP on | Private API (SIP off) |
