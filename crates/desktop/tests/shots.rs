@@ -233,7 +233,13 @@ fn real_a_double_clicked_video_plays_in_the_viewer() {
         let line = snapshot.lines().find(|l| l.contains("[testid=lightbox-seek]")).unwrap_or_default();
         line.split("[value=").nth(1).unwrap_or_default().to_owned()
     };
-    std::thread::sleep(Duration::from_millis(900));
+    // The pipeline starts playing a beat after the viewer opens and the bar shows whole
+    // seconds, so a second after the click it still reads 0:00: wait for the first second,
+    // which a paused video never reaches.
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    while position(&app).starts_with("\"0:00") && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(100));
+    }
     let first = shoot("viewer-1.png");
     assert!(!position(&app).starts_with("\"0:00"), "the double click left it playing");
 
