@@ -53,6 +53,8 @@ fn settle(cx: &mut HeadlessAppContext, host: &GpuiHost) {
     for _ in 0..6 {
         cx.run_until_parked();
         cx.update(|cx| {
+            // No runtime connects `nd::system` here, so what `rt::spawn` hands back waits for this.
+            host.update(cx, nd::system::run_pending);
             host.pump(cx);
             host.draw(cx);
         });
@@ -168,8 +170,11 @@ fn main() {
                 }
             }
             // Reduced motion still fades a page in: wait it out so the capture shows where it lands.
-            std::thread::sleep(std::time::Duration::from_millis(400));
-            settle(&mut cx, &host);
+            // The video poster comes from ffmpeg on tokio, then decodes on the image workers.
+            for _ in 0..10 {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                settle(&mut cx, &host);
+            }
             let capture = host.job(|app| app.capture(window)).expect("capture");
             let name = format!("{}-{}-{label}.png", format!("{preset:?}").to_lowercase(), scheme_name(scheme));
             let out = dir.join(name);
