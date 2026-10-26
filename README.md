@@ -2,16 +2,16 @@
 
 # Messages
 
-iMessage on Linux and macOS. A native Rust client on
+iMessage on Linux, macOS and Windows. A native Rust client on
 [NativeDesktop](https://github.com/FormalStudio/NativeDesktop) (AppKit on macOS, GPUI on
-Linux) that talks to a
+Linux and Windows) that talks to a
 [BlueBubbles server](https://github.com/BlueBubblesApp/bluebubbles-server)
 running on your Mac.
 
-![A group thread](docs/images/thread.png)
+![The demo group thread on macOS, in dark mode](docs/shots/macos.png)
 
 ```
- Linux / macOS                          Mac
+ Linux / macOS / Windows                Mac
 ┌──────────────────┐  http + socket.io  ┌──────────────────────────────┐
 │ Messages (Rust)  │ ─────────────────▶ │ BlueBubbles server           │
 │ NativeDesktop    │ ◀───────────────── │ reads chat.db, drives        │
@@ -27,9 +27,13 @@ window opens on the last known state before the server answers. It idles at
 |---|---|
 | ![Details panel](docs/images/details.png) | ![Conversation switcher](docs/images/switcher.png) |
 
-On Linux, with the Adwaita look:
+On Linux with the Adwaita look, and on Windows:
 
-![A thread on Linux](docs/images/linux-thread.png)
+| | |
+|---|---|
+| ![The demo group thread on Linux](docs/shots/linux.png) | ![The demo group thread on Windows](docs/shots/windows.png) |
+
+`scripts/shots macos|linux|windows|all` regenerates these from the demo data.
 
 ## Features
 

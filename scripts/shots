@@ -1,0 +1,55 @@
+#!/usr/bin/env bash
+# Regenerates the README screenshots: the demo group thread (MESSAGES_DEMO=1, fictional people),
+# dark, in the platform's own look, at the app's default window size: docs/shots/<os>.png. Runs
+# from the macbook.
+#
+#   scripts/shots macos|linux|windows|all
+#
+# linux is tests/shots.rs on g815 through scripts/linux-gate shots, built into
+# $ND_LINUX_BUILD_ROOT (default ~/build/nd-shots on g815's root disk). macos builds here and
+# windows builds in the g815 Windows guest (or on $ND_WINDOWS_HOST); both open the thread and
+# capture through NativeDesktop's scripts/mac/shoot and scripts/windows/vm.
+set -euo pipefail
+
+root=$(cd "$(dirname "$0")/.." && pwd)
+nd=${ND_FRAMEWORK_DIR:-"$HOME/Developer/ecosystem/nativedesktop"}
+mac="$nd/scripts/mac/shoot"
+vm="$nd/scripts/windows/vm"
+shots="$root/docs/shots"
+chat=chat-chat240119384759
+shot=shot-chat240119384759.png
+mkdir -p "$shots"
+
+macos() {
+  (cd "$root" && CARGO_BUILD_JOBS=2 taskpolicy -c utility cargo build -q -p messages --bin messages)
+  "$mac" "$(cd "$root" && cargo metadata -q --format-version 1 | jq -r .target_directory)/debug/messages" "$shots/macos.png" \
+    --env MESSAGES_DEMO=1 --click "$chat"
+}
+
+linux() {
+  export ND_LINUX_BUILD_ROOT=${ND_LINUX_BUILD_ROOT:-/home/kyandesutter/build/nd-shots}
+  export ND_LINUX_GATE_TIMEOUT_MIN=${ND_LINUX_GATE_TIMEOUT_MIN:-120}
+  "$root/scripts/linux-gate" sync
+  SHOT_VARIANTS=native-dark "$root/scripts/linux-gate" shots "$chat"
+  cp "$root/target/linux-shots/native-dark/$shot" "$shots/linux.png"
+}
+
+windows() {
+  local src='C:\nd\shots\messages'
+  "$vm" start
+  "$vm" wait
+  "$vm" lock
+  trap '"$vm" unlock' EXIT
+  "$vm" src "$root" "$src"
+  "$vm" cargo "$src" build -p messages --bin messages
+  "$vm" shoot "$src\\target\\debug\\messages.exe" "$shots/windows.png" --env MESSAGES_DEMO=1 --click "$chat"
+}
+
+case "${1:-}" in
+  macos | linux | windows) "$1" ;;
+  all) macos && linux && windows ;;
+  *)
+    sed -n '2,11p' "$0"
+    exit 2
+    ;;
+esac
