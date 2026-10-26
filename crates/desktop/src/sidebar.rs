@@ -270,7 +270,7 @@ impl Sidebar {
                 let selected = self.selected.as_deref() == Some(guid.as_str());
                 match ui::look(cx) {
                     ui::Look::Mac => chat_row(&guid, selected, cx),
-                    look => list_row(&guid, look, selected, cx),
+                    ui::Look::Fluent | ui::Look::Adwaita => list_row(&guid, selected, cx),
                 }
             }
             Item::ResultsHeader => {
@@ -580,7 +580,7 @@ fn chat_row(guid: &str, selected: bool, cx: &mut App) -> AnyElement {
 
 /// One conversation as WinUI's list view and libadwaita's navigation sidebar show it: the picture,
 /// the name (bold while unread) with the date, one line of preview and the unread dot after it.
-fn list_row(guid: &str, look: ui::Look, selected: bool, cx: &mut App) -> AnyElement {
+fn list_row(guid: &str, selected: bool, cx: &mut App) -> AnyElement {
     let Some(store) = bridge::store(cx) else { return div().into_any_element() };
     let (chat, unread, typing, silenced) = {
         let state = store.state();
@@ -605,7 +605,8 @@ fn list_row(guid: &str, look: ui::Look, selected: bool, cx: &mut App) -> AnyElem
     h_flex()
         .id(format!("chat-{}", chat.identifier))
         .h(px(LIST_ROW))
-        .px(px(if look == ui::Look::Fluent { 12. } else { 6. }))
+        // Clear of the list's selection inset (4 on WinUI, 6 on libadwaita) by the row's padding.
+        .px(px(12.))
         .gap(px(12.))
         .context_menu(move |menu, _, _| chat_menu(menu, &menu_chat, false))
         .child(ui::chat_avatar(&chat, AVATAR_ROW))
@@ -855,14 +856,11 @@ impl Render for Sidebar {
                     .inset()
                     .estimated_row_height(px(if look == ui::Look::Mac { ROW_HEIGHT } else { LIST_ROW }))
                     .selection(Selection::single())
-                    .on_select(cx.listener(|this, e: &SelectEvent<Item>, window, cx| match &e.key {
+                    // The pinned grid is no row to select: its cells open their chats.
+                    .selectable(|item, _| *item != Item::Pinned)
+                    .on_select(cx.listener(|_, e: &SelectEvent<Item>, window, cx| match &e.key {
                         Item::Chat(guid) => Self::open(guid, window, cx),
-                        // The pinned grid is no row to select: its cells open their chats.
-                        Item::Pinned => {
-                            let keep = this.selected.clone().map(Item::Chat).into_iter().collect();
-                            this.list.set_selected(keep, cx);
-                        }
-                        Item::Result(_) | Item::ResultsHeader | Item::Note => {}
+                        Item::Pinned | Item::Result(_) | Item::ResultsHeader | Item::Note => {}
                     }))
                     .flex_1()
                     .min_h_0(),
