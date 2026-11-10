@@ -7,14 +7,14 @@
 #
 # linux is tests/shots.rs on g815 through scripts/linux-gate shots, built into
 # $ND_LINUX_BUILD_ROOT (default ~/build/nd-shots on g815's root disk). macos builds here and
-# windows builds in the g815 Windows guest (or on $ND_WINDOWS_HOST); both open the thread and
-# capture through NativeDesktop's scripts/mac/shoot and scripts/windows/vm.
+# windows builds on the Windows PC (or on $ND_WINDOWS_HOST); both open the thread and
+# capture through NativeDesktop's scripts/mac/shoot and scripts/windows/remote.
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/.." && pwd)
 nd=${ND_FRAMEWORK_DIR:-"$HOME/Developer/ecosystem/nativedesktop"}
 mac="$nd/scripts/mac/shoot"
-vm="$nd/scripts/windows/vm"
+win="$nd/scripts/windows/remote"
 shots="$root/docs/shots"
 chat=chat-chat240119384759
 shot=shot-chat240119384759.png
@@ -36,13 +36,12 @@ linux() {
 
 windows() {
   local src='C:\nd\shots\messages'
-  "$vm" start
-  "$vm" wait
-  "$vm" lock
-  trap '"$vm" unlock' EXIT
-  "$vm" src "$root" "$src"
-  "$vm" cargo "$src" build -p messages --bin messages
-  "$vm" shoot "$src\\target\\debug\\messages.exe" "$shots/windows.png" --env MESSAGES_DEMO=1 --click "$chat"
+  "$win" wait
+  "$win" lock
+  trap '"$win" unlock' EXIT
+  "$win" src "$root" "$src"
+  "$win" cargo "$src" build -p messages --bin messages
+  "$win" shoot "$src\\target\\debug\\messages.exe" "$shots/windows.png" --env MESSAGES_DEMO=1 --click "$chat"
 }
 
 case "${1:-}" in
