@@ -31,10 +31,37 @@ export function findMyRunning(): boolean {
   }
 }
 
-/** `-g` leaves the front window alone and `-j` starts the app hidden, so nothing takes focus. Answers whether it had to launch. */
+/**
+ * `open -g -j` is not enough: LaunchServices drops the "don't make frontmost" modifier now and
+ * then (the log shows `BringForward: ... allDisabled=1`), and Find My is made front the moment it
+ * orders its restored window, taking key focus from whatever is in use. Launching it as a UI
+ * element (`_kLSOpenOptionUIElementLaunchKey`, SPI) skips the bring-forward step altogether
+ * (`bringForward=0 foreground=0`), and the app still polls and writes its caches. JXA reaches the
+ * NSWorkspace call in process, so no Apple event is sent and no automation right is needed.
+ */
+export const LAUNCH_JXA = `
+ObjC.import('AppKit')
+const ws = $.NSWorkspace.sharedWorkspace
+const c = $.NSWorkspaceOpenConfiguration.configuration
+c.activates = false
+c.hides = true
+c.addsToRecentItems = false
+c._setAdditionalLSOpenOptions($({ _kLSOpenOptionUIElementLaunchKey: true }))
+let result = null
+ws.openApplicationAtURLConfigurationCompletionHandler(ws.URLForApplicationWithBundleIdentifier('com.apple.findmy'), c, (app, err) => {
+  result = err.isNil() ? 'ok' : ObjC.unwrap(err.localizedDescription)
+})
+const until = $.NSDate.dateWithTimeIntervalSinceNow(10)
+while (result === null && $.NSDate.date.compare(until) < 0) $.NSRunLoop.currentRunLoop.runUntilDate($.NSDate.dateWithTimeIntervalSinceNow(0.05))
+result ?? 'timed out'
+`
+
+/** Answers whether it had to launch. */
 export function launchFindMy(): boolean {
   if (findMyRunning()) return false
-  Bun.spawnSync(['open', '-g', '-j', '-a', APP])
+  const out = Bun.spawnSync(['osascript', '-l', 'JavaScript', '-e', LAUNCH_JXA])
+  const result = out.stdout.toString().trim()
+  if (result !== 'ok') console.log(`mac-agent: launching Find My failed: ${result || out.stderr.toString().trim()}`)
   return true
 }
 
