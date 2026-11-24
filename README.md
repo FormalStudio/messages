@@ -110,7 +110,7 @@ Install [rustup](https://rustup.rs) and the Visual Studio C++ build tools, then 
 msvc toolchain and install it with a Start menu shortcut:
 
 ```powershell
-cargo +1.95.0-x86_64-pc-windows-msvc build --release -p messages
+cargo +1.98.1-x86_64-pc-windows-msvc build --release -p messages
 powershell -ExecutionPolicy Bypass -File packaging\windows\install.ps1
 ```
 

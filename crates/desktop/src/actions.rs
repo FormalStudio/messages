@@ -145,8 +145,8 @@ pub fn init(cx: &mut App) {
         KeyBinding::new("secondary-shift-up", PrevConversation, Some(CONTEXT)),
         KeyBinding::new("escape", Dismiss, Some(CONTEXT)),
     ];
-    for n in 1..=6 {
-        bindings.push(KeyBinding::new(&format!("secondary-{n}"), QuickTapback(n), Some(CONTEXT)));
+    for (n, keys) in (1..).zip(["secondary-1", "secondary-2", "secondary-3", "secondary-4", "secondary-5", "secondary-6"]) {
+        bindings.push(KeyBinding::new(keys, QuickTapback(n), Some(CONTEXT)));
     }
     bindings.extend([
         KeyBinding::new("left", LightboxPrev, Some("Lightbox")),
