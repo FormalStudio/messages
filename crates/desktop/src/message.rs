@@ -994,6 +994,9 @@ pub fn render(data: &MessageRowData, props: &RowProps, media: &Media, theme: &Th
         _ => div().w(px(AVATAR_COLUMN)).flex_none().into_any_element(),
     });
     let gap = if data.position.starts_run() { BUBBLE.run_gap } else { BUBBLE.in_run_gap };
+    // The bubble hangs its reaction pills `reaction_lift` above its top edge; the list clips a
+    // row to its bounds, so the row makes room for them.
+    let lift = if tapback_groups(&message.tapbacks).is_empty() { 0. } else { BUBBLE.reaction_lift };
     let can_react = props.capabilities.reactions && !failed;
     let open_picker = OpenTapbacks(at(data));
     let mine = message.tapbacks.iter().find(|t| t.from_me).map(|t| t.kind);
@@ -1019,7 +1022,7 @@ pub fn render(data: &MessageRowData, props: &RowProps, media: &Media, theme: &Th
         .id(format!("row-{}", data.key))
         .w_full()
         .px(px(THREAD_INSET))
-        .pt(px(gap))
+        .pt(px(gap + lift))
         .when(from_me, |col| col.items_end())
         .when(props.highlighted, |col| col.bg(theme.selection))
         .context_menu(row_menu)
